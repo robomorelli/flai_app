@@ -1,0 +1,5 @@
+[server]
+maxUploadSize = 1024   # MB, flights in parquet/csv can be large
+
+[browser]
+gatherUsageStats = false

@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Model weights (large): distribute via git-lfs or a shared drive
+weights/**/*.pt
+weights/**/*.ckpt
