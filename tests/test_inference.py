@@ -63,3 +63,60 @@ def test_end_to_end(bundle):
     seg = utils.segments_df(res, META["classes"])
     assert set(seg.columns) >= {"manoeuvre", "start_s", "duration_s"}
     utils.plot_flight(res, flight.raw, flight.time, ["a"], {}, META["classes"])
+
+
+GT_META = {**META, "gt": {"column": "MANOEUVERS", "id_to_name": {"0": "NO MAN", "7": "X alias", "9": "Unused"},
+                          "alias": {"X alias": "X"}}}
+
+
+def test_gt_filename_and_encoding(bundle):
+    assert utils.is_gt_filename("FAN1205_Y.parquet") and not utils.is_gt_filename("FAN1205_X.parquet")
+    b = utils.ModelBundle("tiny", GT_META, bundle.model, bundle.device)
+    ids = utils.encode_gt(pd.Series([0.0, 7.0, 9.0, 42.0, np.nan]), b)
+    assert ids.tolist() == [0, 2, 1, 1, -1]          # unknown / unselected -> OTHER MAN, NaN -> ignored
+    assert utils.encode_gt(pd.Series(["NO MAN", "X alias", "zzz"]), b).tolist() == [0, 2, 1]
+    with pytest.raises(utils.InputError):            # numeric IDs need the mapping
+        utils.encode_gt(pd.Series([1.0]), bundle)
+
+
+def test_gt_alignment_follows_cut(bundle):
+    t = 100 + np.arange(500) / 32
+    df = pd.DataFrame(np.random.randn(500, 3), columns=["a", "b", "c"], index=pd.Index(t, name="time"))
+    f = utils.prepare_flight(df, "F", bundle)
+    gt = pd.Series(np.arange(500), index=t)
+    assert utils.align_gt(gt, f, 32).tolist() == list(range(10, 490))            # positional
+    assert utils.align_gt(gt.iloc[5:], f, 32).tolist() == list(range(10, 490))   # by time
+
+
+def test_scores_match_definition():
+    y, p = np.array([0, 0, 1, 1, 2, -1]), np.array([0, 1, 1, 1, 0, 2])
+    cm = utils.confusion_matrix(y, p, 3)
+    assert cm.sum() == 5
+    s, per_class = utils.scores_from_confusion(cm, ["n", "o", "x"])
+    assert s["accuracy"] == pytest.approx(3 / 5)
+    f1 = [0.5, 0.8, 0.0]
+    assert s["f1_weighted"] == pytest.approx((2 * f1[0] + 2 * f1[1] + f1[2]) / 5)
+    assert s["f1_macro"] == pytest.approx(np.mean(f1))
+
+
+def test_plot_with_ground_truth(bundle):
+    flight = utils.prepare_flight(pd.DataFrame(np.random.randn(400, 3), columns=["a", "b", "c"]), "F", bundle)
+    res = utils.classify_flight(bundle, flight, None)
+    gt = np.zeros(len(flight.x), int); gt[50:150] = 2
+    fig = utils.plot_flight(res, flight.raw, flight.time, ["a"], {}, META["classes"], gt=gt)
+    assert any(tr.name == "pred ≠ GT" for tr in fig.data) or (res.labels[gt >= 0] == gt).all()
+    utils.plot_flight(None, flight.raw, flight.time, ["a"], {}, META["classes"], gt=gt)  # GT before running
+
+
+def test_read_from_folder_only_needed_columns(tmp_path, bundle):
+    t = 100 + np.arange(300) / 32
+    df = pd.DataFrame(np.random.randn(300, 5), columns=["a", "b", "c", "x1", "x2"], index=pd.Index(t, name="time"))
+    df.to_parquet(tmp_path / "F7_X.parquet")
+    df[["a"]].rename(columns={"a": "MANOEUVERS"}).to_parquet(tmp_path / "F7_Y.parquet")
+    files = utils.list_flight_files(tmp_path)
+    assert list(files) == ["F7"]                                   # _Y is not a flight
+    read = utils.read_flight_path(files["F7"], ["a", "b", "c", "MANOEUVERS"])
+    assert list(read.columns) == ["a", "b", "c"] and read.index[0] == 100   # time kept, extras skipped
+    assert utils.list_flight_files(tmp_path / "missing") == {}
+    df.to_parquet(tmp_path / "F7.parquet")                         # ambiguous name: _X still wins
+    assert utils.list_flight_files(tmp_path)["F7"].name == "F7_X.parquet"

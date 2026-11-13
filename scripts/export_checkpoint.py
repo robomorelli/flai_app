@@ -13,7 +13,8 @@ because the original .ckpt pickles enums/classes from ``src.*``:
 Output (in weights/classification/):
     <name>.pt    -> plain state_dict (loadable with torch.load(weights_only=True))
     <name>.json  -> metadata: sensors (ordered), normalization stats, classes,
-                    window/output steps, hyper-parameters, sampling rate, ...
+                    window/output steps, hyper-parameters, sampling rate, ground-truth
+                    label decoding (ID -> name -> class), ...
 """
 import argparse
 import json
@@ -83,6 +84,28 @@ def main():
     # [min, max, mean, count] durations in steps, keyed by class name
     min_durations = {k: v[0] for k, v in man_stats.items() if k in classes}
 
+    # ground-truth decoding as in training (dataloader_utils.load_man): ID -> name via
+    # manoeuvers.csv, then alias -> class via JSON_MAN_PATH, anything else -> OTHER MAN
+    import csv  # noqa: E402
+
+    map_csv = Path(ext.get("TARGET_MAPPING_CSV_PATH") or Path(ext["JSON_MAN_PATH"]).parent / cst.TARGET_MAPPING)
+    id_to_name = {}
+    if map_csv.exists():
+        with open(map_csv) as f:
+            id_to_name = {str(int(r["ID"])): r["NAME"] for r in csv.DictReader(f)}
+    else:
+        print(f"WARNING: {map_csv} not found: numeric ground-truth IDs cannot be decoded by the app")
+    gt = {"column": ext.get("TARGET_COL", cst.MAN_COL_IDS), "id_to_name": id_to_name,
+          "alias": {a: cls for cls, aliases in man_json.items() for a in aliases}}
+
+    # flights used for train / val / test (shown in the app's model card)
+    splits = {}
+    if ext.get("JSON_FLIGHT_PATH") and Path(ext["JSON_FLIGHT_PATH"]).exists():
+        fj = _read_json(ext["JSON_FLIGHT_PATH"])
+        splits = {k: list(fj.get(k, [])) for k in ("train", "val", "test")}
+    else:
+        print("WARNING: JSON_FLIGHT_PATH not found: the bundle will not list train/val/test flights")
+
     best_score = None
     for k, v in ckpt.get("callbacks", {}).items():
         if "ModelCheckpoint" in k:
@@ -109,6 +132,9 @@ def main():
         "classes": classes,
         "man_min_duration_steps": min_durations,
         "hps": hps,
+        "gt": gt,
+        "splits": splits,
+        "splits_source": Path(ext["JSON_FLIGHT_PATH"]).name if ext.get("JSON_FLIGHT_PATH") else None,
     }
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

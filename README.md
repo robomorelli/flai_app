@@ -54,9 +54,31 @@ listed in the model card (extra columns are ignored, order does not matter). A
 `time` column / index is used as time axis, otherwise `step / sampling_hz`.
 The flight name is the file name before the first `_` (`FAN1205_X.parquet` -> `FAN1205`).
 
+Instead of uploading, **Source → Data folder** lists the flights of a local folder (default: the
+training data next to this app, or `FLAI_GT_DIR`) and reads only the model's sensor columns.
+The **Show** filter uses the train/val/test split stored in the bundle: by default only the test
+flights (never seen in training) are offered; **Select all** picks every flight shown.
+
+## Ground truth (optional)
+
+Off by default. Enable **Compare with ground truth** in the sidebar; for each flight the app
+looks for labels in this order: a `MANOEUVERS` column in the flight file itself, an uploaded
+`<flight>_Y.parquet` (upload it together with `<flight>_X.parquet`), then
+`<folder>/<flight>_Y.parquet` in the folder set in the sidebar (default: `FLAI_GT_DIR`, e.g.
+`../flai/data/flights/M346/PAR/parquet`).
+Labels are decoded as in training (ID -> name via `manoeuvers.csv`, name -> class via the
+`chosen_man_*.json` aliases, everything else -> OTHER MAN), using the `gt` section of the
+bundle JSON, and get the same transient cut as the signals.
+The app shows step-level accuracy / F1 (pooled and per flight, also without post-processing),
+per-class scores, the confusion matrix, a ground-truth timeline under the prediction with
+mismatches in red, and adds `gt_class_*` columns to the per-step CSV.
+
 ## Outputs
 
 * table of detected manoeuvres (start, end, duration, mean confidence) per flight;
+* select one or more rows of the summary table to see where those manoeuvres were detected (one strip per flight,
+  with numbered occurrences, ground truth if enabled, zoom on each occurrence); click a row of a
+  flight's segment table to move that flight's window onto it;
 * interactive plot: signals in physical units + manoeuvre timeline + confidence;
 * CSV downloads: segments and per-step predictions.
 
@@ -67,4 +89,4 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-Environment variables: `FLAI_MODEL_DIR`, `FLAI_DEFAULT_MODEL`, `FLAI_DEVICE` (`auto|cpu|cuda|mps`), `FLAI_BATCH_SIZE`.
+Environment variables: `FLAI_MODEL_DIR`, `FLAI_GT_DIR`, `FLAI_DEFAULT_MODEL`, `FLAI_DEVICE` (`auto|cpu|cuda|mps`), `FLAI_BATCH_SIZE`.

@@ -17,9 +17,14 @@ DEVICE = os.environ.get("FLAI_DEVICE", "auto")  # auto | cpu | cuda | mps
 # Columns that may carry the time axis in uploaded files
 TIME_COLUMNS = ("time", "Time", "TIME", "t")
 
+# Ground truth (optional): label column and default folder searched for <flight>_Y.parquet
+GT_COLUMNS = ("MANOEUVERS",)
+GT_DIR = os.environ.get("FLAI_GT_DIR", "")
+# Used when FLAI_GT_DIR is not set: the training repo next to this app, {aircraft} from the model bundle
+GT_DIR_CANDIDATES = (str(ROOT.parent / "flai" / "data" / "flights" / "{aircraft}" / "PAR" / "parquet"),)
+
 # Plotting
 MAX_PLOT_POINTS = 6000          # per trace, after min/max decimation
-DEFAULT_PLOTTED_SENSORS = 4
 
 # Post-processing defaults (steps at the model sampling rate)
 PP_MERGE_GAP_STEPS = 100
