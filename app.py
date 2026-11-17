@@ -259,28 +259,40 @@ if use_gt:
 
 classes = bundle.classes
 descr = meta.get("sensor_descriptions", {})
+FIT = "fit manoeuvre"
 WIDTHS = {"30 s": 30, "1 min": 60, "2 min": 120, "5 min": 300, "10 min": 600, "30 min": 1800, "whole flight": None}
 
 
-def goto(name: str, start: float, end: float):
-    """Move the window of a flight tab onto [start, end] (smallest window that fits it with margin).
-    Used as a widget callback, so it may change other widgets' state."""
-    T = float(flights[name][0].time[-1])
-    label = next((l for l, v in WIDTHS.items() if v and v >= 1.5 * (end - start)), "whole flight")
-    w = min(WIDTHS[label] or T, T)
-    st.session_state[f"win_{name}"] = label
-    st.session_state[f"pos_{name}"] = round(min(max((start + end) / 2 - w / 2, 0.0), max(T - w, 0.0)), 1)
+def focus_on(fl: str, s: float, e: float, label: str):
+    """Point the flight viewer at one manoeuvre: select its flight, fit the window on it (with margin)
+    and highlight it. Used as a widget callback, so it may change other widgets' state."""
+    T = float(flights[fl][0].time[-1])
+    pad = max(10.0, 0.5 * (e - s))
+    w = min(e - s + 2 * pad, T)
+    st.session_state["view_flight"] = fl
+    st.session_state["focus"] = dict(flight=fl, start=s, end=e, label=label, width=w)
+    st.session_state["win"] = FIT
+    st.session_state["pos"] = round(min(max(s - pad, 0.0), max(T - w, 0.0)), 1)
 
 
-def goto_selected(name: str, table_key: str, segs: pd.DataFrame):
+def focus_selected(table_key: str, segs: pd.DataFrame):
     rows = st.session_state[table_key]["selection"]["rows"]
-    if rows:
-        goto(name, float(segs.iloc[rows[0]]["start_s"]), float(segs.iloc[rows[0]]["end_s"]))
+    if rows and rows[0] < len(segs):
+        r = segs.iloc[rows[0]]
+        label = (f"#{r['#']} " if "#" in segs else "") + r["manoeuvre"]
+        focus_on(r["flight"], float(r["start_s"]), float(r["end_s"]), label)
+
+
+def clear_focus():
+    f = st.session_state.pop("focus", None)
+    if f and st.session_state.get("win") == FIT:  # keep roughly the same zoom with a preset width
+        st.session_state["win"] = next((l for l, v in WIDTHS.items() if v and v >= f["width"]), "whole flight")
 
 
 def show_manoeuvres(picks: pd.DataFrame, segs: pd.DataFrame):
     """Where the selected (flight, manoeuvre) pairs were detected: one whole-flight strip per flight
-    (selected manoeuvres coloured, numbered), one table of all occurrences, zoom on the clicked one."""
+    (selected manoeuvres coloured, numbered) and one table of all occurrences. Clicking an occurrence
+    opens it in the flight viewer (the only detailed signal chart of the page)."""
     occ = segs.merge(picks[["flight", "manoeuvre"]], on=["flight", "manoeuvre"])
     occ = occ.sort_values(["flight", "start_s"]).reset_index(drop=True)
     occ.insert(0, "#", np.arange(1, len(occ) + 1))
@@ -291,29 +303,13 @@ def show_manoeuvres(picks: pd.DataFrame, segs: pd.DataFrame):
         st.plotly_chart(utils.plot_occurrences(results[fl], flights[fl][0].time, classes, cls, gts.get(fl),
                                                numbers=dict(zip(o["start_step"], o["#"])), title=fl),
                         use_container_width=True, key=f"occfig_{fl}", config={"displayModeBar": False})
-    c1, c2 = st.columns([2, 3])
-    with c1:
-        cols = (["flight"] if occ["flight"].nunique() > 1 else []) + \
-               (["manoeuvre"] if occ["manoeuvre"].nunique() > 1 else [])
-        sel = st.dataframe(occ[["#"] + cols + ["start_s", "end_s", "duration_s", "mean_confidence"]],
-                           hide_index=True, use_container_width=True, on_select="rerun",
-                           selection_mode="single-row", key="occ_table")
-        st.caption("Click an occurrence to zoom on it.")
-    i = sel.selection.rows[0] if sel.selection.rows and sel.selection.rows[0] < len(occ) else 0
-    fl, man = occ.loc[i, "flight"], occ.loc[i, "manoeuvre"]
-    s, e = float(occ.loc[i, "start_s"]), float(occ.loc[i, "end_s"])
-    pad = max(10.0, 0.5 * (e - s))
-    flight, res = flights[fl][0], results[fl]
-    with c2:
-        fig = utils.plot_flight(res, flight.raw, flight.time, st.session_state.get(f"sig_{fl}", bundle.sensors),
-                                descr, classes, t_range=(max(s - pad, 0.0), e + pad),
-                                normalize=st.session_state.get(f"norm_{fl}", True), gt=gts.get(fl))
-        fig.add_vrect(x0=s, x1=e, line=dict(color="black", width=1.5, dash="dot"), row=1, col=1)
-        fig.update_layout(title=dict(text=f"#{i + 1} {man} — {fl}: {s:.1f}s → {e:.1f}s", font_size=13),
-                          showlegend=False)
-        st.plotly_chart(fig, use_container_width=True, key="occzoom")
-        st.button(f"Show #{i + 1} in the {fl} tab", key="occgo", on_click=goto, args=(fl, s, e),
-                  help="Moves the window of the flight tab below onto this occurrence.")
+    cols = (["flight"] if occ["flight"].nunique() > 1 else []) + \
+           (["manoeuvre"] if occ["manoeuvre"].nunique() > 1 else [])
+    st.dataframe(occ[["#"] + cols + ["start_s", "end_s", "duration_s", "mean_confidence"]],
+                 hide_index=True, use_container_width=True, selection_mode="single-row",
+                 key="occ_table", on_select=partial(focus_selected, "occ_table", occ))
+    st.caption("Click an occurrence to open it in the **Flight viewer** below: window fitted on it, "
+               "manoeuvre highlighted with a dotted box.")
 
 
 if results:
@@ -343,6 +339,80 @@ if results:
     steps = pd.concat([r.steps_df(classes, gts.get(n)) for n, r in results.items()], ignore_index=True)
     d2.download_button("Download per-step predictions (CSV)", steps.to_csv(index=False).encode(),
                        "predictions_per_step.csv", "text/csv", use_container_width=True)
+
+st.subheader("Flight viewer")
+names = list(flights)
+if st.session_state.get("view_flight") not in names:
+    st.session_state["view_flight"] = names[0]
+name = st.selectbox("Flight", names, key="view_flight",
+                    format_func=lambda n: n + (f" ({SPLIT_OF[n]} set)" if n in SPLIT_OF else ""))
+flight = flights[name][0]
+for w in flight.warnings:
+    st.warning(w)
+s1, s2 = st.columns([4, 1])
+chosen = s1.multiselect("Signals (default: all sensors used for training)", bundle.sensors,
+                        default=bundle.sensors, key="sig", format_func=lambda s: f"{s} — {descr.get(s, '')}")
+norm = s2.toggle("Normalize signals (z-score)", value=True, key="norm",
+                 help="Sensors have different units: normalizing makes them comparable on one axis. "
+                      "Hover always shows the physical value.")
+T = float(flight.time[-1])
+cs, ce = int(meta.get("cut_start", 0)), int(meta.get("cut_end", 0))
+cut_note = (f" First {cs} and last {ce} steps ({cs / bundle.hz:.0f}s + {ce / bundle.hz:.0f}s) are cut "
+            "as transients; t=0 is the first step after the cut."
+            if cut and (cs or ce) and not any("cut skipped" in w for w in flight.warnings) else "")
+
+# ---- highlighted manoeuvre (set by clicking a table row), only for the flight it belongs to
+focus = st.session_state.get("focus")
+focus = focus if focus and focus["flight"] == name else None
+if focus:
+    f1, f2 = st.columns([5, 1])
+    f1.markdown(f"Highlighted: **{focus['label']}** — {focus['start']:.1f}s → {focus['end']:.1f}s "
+                f"({focus['end'] - focus['start']:.1f}s), dotted box in the chart.")
+    f2.button("Clear highlight", on_click=clear_focus, use_container_width=True)
+
+# ---- window on the flight: full resolution inside, navigator below
+widths = ({FIT: focus["width"]} if focus else {}) | WIDTHS
+if st.session_state.get("win") not in widths:
+    st.session_state["win"] = "2 min"
+wlabel = st.radio("Window", list(widths), horizontal=True, key="win")
+w = min(widths[wlabel] or T, T)
+max_start = max(T - w, 0.0)
+if "pos" not in st.session_state:
+    st.session_state["pos"] = max_start / 2          # start centred on the flight
+st.session_state["pos"] = min(max(float(st.session_state["pos"]), 0.0), max_start)
+t0 = st.session_state["pos"]
+t_range = (t0, t0 + w)
+
+res = results.get(name) if results else None
+n_win = int(np.searchsorted(flight.time, t_range[1], "right") - np.searchsorted(flight.time, t_range[0]))
+st.caption(f"Showing {t_range[0]:.0f}s → {t_range[1]:.0f}s of {T:.0f}s ({T / 60:.1f} min): "
+           f"{n_win} samples per signal, every sample drawn (no decimation).{cut_note}")
+if n_win * max(len(chosen), 1) > 2_000_000:
+    st.info("Many points in this window: the chart may be slow. Use a shorter window for smoother interaction.")
+fig = utils.plot_flight(res, flight.raw, flight.time, chosen, descr, classes,
+                        t_range=t_range, normalize=norm, gt=gts.get(name))
+if focus and focus["end"] >= t_range[0] and focus["start"] <= t_range[1]:
+    fig.add_vrect(x0=focus["start"], x1=focus["end"], line=dict(color="black", width=1.5, dash="dot"),
+                  row=1, col=1)
+st.plotly_chart(fig, use_container_width=True, key="fig")
+
+if max_start > 0:
+    def shift(d=0.0, m=max_start):
+        st.session_state["pos"] = min(max(st.session_state["pos"] + d, 0.0), m)
+    b1, b2, b3 = st.columns([1, 10, 1])
+    b1.button("◀", key="prev", on_click=shift, kwargs=dict(d=-w), use_container_width=True, help="Previous window")
+    b2.slider("Window start [s]", 0.0, max_start, step=max(round(1 / bundle.hz, 3), 0.1),
+              key="pos", label_visibility="collapsed")
+    b3.button("▶", key="next", on_click=shift, kwargs=dict(d=w), use_container_width=True, help="Next window")
+st.plotly_chart(utils.plot_overview(res, flight.raw, flight.time, chosen, classes if res else None, t_range),
+                use_container_width=True, key="ov", config={"displayModeBar": False})
+st.caption("Overview of the whole flight (red box = window above). Simplified for display only.")
+if res is not None:
+    segs = utils.segments_df(res, classes)
+    st.dataframe(segs.drop(columns=["flight", "class_id", "start_step", "end_step"]), hide_index=True,
+                 use_container_width=True, selection_mode="single-row", key=f"segs_{name}",
+                 on_select=partial(focus_selected, f"segs_{name}", segs))
+    st.caption(f"All manoeuvres of {name}: click one to fit the window on it and highlight it.")
 
 if use_gt:
     st.subheader("Comparison with ground truth")
@@ -388,61 +458,3 @@ if use_gt:
             cmn = cm_all[np.ix_(present, present)]
             cmn = cmn / np.maximum(cmn.sum(1, keepdims=True), 1)
             st.plotly_chart(utils.plot_confusion(cmn, [classes[i] for i in present]), use_container_width=True)
-
-st.subheader("Flights")
-tabs = st.tabs(list(flights))
-for tab, (name, (flight, _)) in zip(tabs, flights.items()):
-    with tab:
-        for w in flight.warnings:
-            st.warning(w)
-        chosen = st.multiselect("Signals (default: all sensors used for training)", bundle.sensors,
-                                default=bundle.sensors, key=f"sig_{name}",
-                                format_func=lambda s: f"{s} — {descr.get(s, '')}")
-        norm = st.toggle("Normalize signals (z-score)", value=True, key=f"norm_{name}",
-                         help="Sensors have different units: normalizing makes them comparable on one axis. "
-                              "Hover always shows the physical value.")
-        T = float(flight.time[-1])
-        cs, ce = int(meta.get("cut_start", 0)), int(meta.get("cut_end", 0))
-        cut_note = (f" First {cs} and last {ce} steps ({cs / bundle.hz:.0f}s + {ce / bundle.hz:.0f}s) are cut "
-                    "as transients; t=0 is the first step after the cut."
-                    if cut and (cs or ce) and not any("cut skipped" in w for w in flight.warnings) else "")
-
-        # ---- window on the flight: full resolution inside, navigator below
-        widths = WIDTHS
-        wlabel = st.radio("Window", list(widths), index=2, horizontal=True, key=f"win_{name}")
-        w = min(widths[wlabel] or T, T)
-        pos_key, max_start = f"pos_{name}", max(T - w, 0.0)
-        if pos_key not in st.session_state:
-            st.session_state[pos_key] = max_start / 2          # start centred on the flight
-        st.session_state[pos_key] = min(max(float(st.session_state[pos_key]), 0.0), max_start)
-        t0 = st.session_state[pos_key]
-        t_range = (t0, t0 + w)
-
-        res = results.get(name) if results else None
-        n_win = int(np.searchsorted(flight.time, t_range[1], "right") - np.searchsorted(flight.time, t_range[0]))
-        st.caption(f"Showing {t_range[0]:.0f}s → {t_range[1]:.0f}s of {T:.0f}s ({T / 60:.1f} min): "
-                   f"{n_win} samples per signal, every sample drawn (no decimation).{cut_note}")
-        if n_win * max(len(chosen), 1) > 2_000_000:
-            st.info("Many points in this window: the chart may be slow. Use a shorter window for smoother interaction.")
-        fig = utils.plot_flight(res, flight.raw, flight.time, chosen, descr, classes,
-                                t_range=t_range, normalize=norm, gt=gts.get(name))
-        st.plotly_chart(fig, use_container_width=True, key=f"fig_{name}")
-
-        if max_start > 0:
-            def shift(k=pos_key, d=0.0, m=max_start):
-                st.session_state[k] = min(max(st.session_state[k] + d, 0.0), m)
-            b1, b2, b3 = st.columns([1, 10, 1])
-            b1.button("◀", key=f"prev_{name}", on_click=shift, kwargs=dict(d=-w), use_container_width=True,
-                      help="Previous window")
-            b2.slider("Window start [s]", 0.0, max_start, step=max(round(1 / bundle.hz, 3), 0.1),
-                      key=pos_key, label_visibility="collapsed")
-            b3.button("▶", key=f"next_{name}", on_click=shift, kwargs=dict(d=w), use_container_width=True,
-                      help="Next window")
-        st.plotly_chart(utils.plot_overview(res, flight.raw, flight.time, chosen, classes if res else None, t_range),
-                        use_container_width=True, key=f"ov_{name}", config={"displayModeBar": False})
-        st.caption("Overview of the whole flight (red box = window above). Simplified for display only.")
-        if res is not None:
-            segs = utils.segments_df(res, classes)
-            st.dataframe(segs, hide_index=True, use_container_width=True, selection_mode="single-row",
-                         key=f"segs_{name}", on_select=partial(goto_selected, name, f"segs_{name}", segs))
-            st.caption("Click a manoeuvre to move the window onto it.")
